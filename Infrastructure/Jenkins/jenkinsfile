@@ -1,52 +1,49 @@
 pipeline {
     agent any 
-
+   
    stages { 
     
      stage('Preparation') { 
+       
       steps {
-          cleanWs deleteDirs: true
-          slackSend (color: "good", message: "Status: STARTED RE-DEPLOYMENT | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER}")
-          git 'https://github.com/jente-janssens/IaC'
-      }
+      slackSend color: "good", message: "Status: DEPLOYING CLOUD INFRA | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER} "
+      git 'https://github.com/jente-janssens/IaC'
+     }
            
    }
-   
-   
+    
     
     stage('Apply') {
+   
+           environment {
+            
+            subscription_id = "70b0cad6-067d-4520-942c-e19cd37c2001"
+			client_id       = "0d8724bd-8858-4914-9cb4-1d234b8ebedc"
+			client_secret   = "TVQBTZ.k~BGhTC_-oz0EXumsUkFzhzCzx2"
+			tenant_id       = "77d33cc5-c9b4-4766-95c7-ed5b515e1cce"
+            
+        }
+   
     steps {
         
-        sh "cd fitcycle_terraform_fix/ && terraform init --backend-config=\"bucket=secure-state-demo\" --backend-config=\"key=terraform.tfstate\" --backend-config=\"region=us-west-1\" -lock=false && terraform apply --input=false --var-file=example_vars_files/us_west_1_mysql.tfvars --auto-approve"
-        sh "cd fitcycle_terraform_fix && terraform output --json > Terraform_Output.json"
+        sh "cd fitcycle_terraform/ && terraform init --backend-config=\"bucket=secure-state-demo\" --backend-config=\"key=terraform.tfstate\" --backend-config=\"region=us-west-1\" -lock=false && terraform apply --input=false --var-file=example_vars_files/us_west_1_mysql.tfvars --auto-approve"
+        sh "cd fitcycle_terraform && terraform output --json > Terraform_Output.json"
     }
   }
-  
-    stage('Send Notification') {
-        steps {
-            script {
-                if (params.VIOLATION_FOUND == true) { 
-                    
-                    slackSend (color: "good", message: "Status: RE-DEPLOYED CLOUD INFRA | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER}")
-                } else {
-                    slackSend (color: "warning" , message: "Status: VIOLATION DID NOT MATCH. SKIP RE-DEPLOY | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER}")
-                }
-            }
-        }
-    }
 
  }
- 
- post {
-        
+       post {
+           
         success {
             slackSend color: "good", message: "Status: PIPELINE ${currentBuild.result} | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER}"
-            archiveArtifacts artifacts: 'fitcycle_terraform_fix/Terraform_Output.json', fingerprint: true
-            archiveArtifacts artifacts: 'violations_using_api.py', fingerprint: true           
+            archiveArtifacts artifacts: 'fitcycle_terraform/Terraform_Output.json', fingerprint: true
+            archiveArtifacts artifacts: 'violations_using_api.py', fingerprint: true
+        }
+        failure {
+            slackSend color: "danger", message: "Status: PIPELINE ${currentBuild.result} | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER}"
         }
         aborted {
-            slackSend color: "warning", message: "Status: ${currentBuild.result} | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER}"
+            slackSend color: "warning", message: "Status: PIPELINE ${currentBuild.result} | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER}"
         }
- }
- 
+    }
 }
