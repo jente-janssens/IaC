@@ -1,82 +1,52 @@
-podTemplate(label: 'azurevm', containers: [
-    containerTemplate(name: 'terraform-az', image: '<containerRegistry>/terraform-az', ttyEnabled: true, command: 'cat',envVars: [
-       secretEnvVar(key: 'ARM_CLIENT_ID', secretName: '0d8724bd-8858-4914-9cb4-1d234b8ebedc', secretKey: 'clientid'),
-       secretEnvVar(key: 'ARM_CLIENT_SECRET', secretName: 'TVQBTZ.k~BGhTC_-oz0EXumsUkFzhzCzx2', secretKey: 'clientsecret'),
-       secretEnvVar(key: 'ARM_TENANT_ID', secretName: '77d33cc5-c9b4-4766-95c7-ed5b515e1cce', secretKey: 'tenantid'),
-       secretEnvVar(key: 'ARM_SUBSCRIPTION_ID', secretName: '70b0cad6-067d-4520-942c-e19cd37c2001', secretKey: 'subscriptionid')
-        ]),
-  ]) 
-{
-    node('azurevm') {
-        def gitRepo = 'https://github.com/jente-janssens/IaC'
-        currentBuild.result = "SUCCESS"
+pipeline {
+    agent any 
 
-    try {
-         stage('Init parameters'){
-            container('terraform-az') {
-                // Get SSH public for the VMSS from Jenkins
-                withCredentials([sshUserPrivateKey(credentialsId: '<your-public-key-id>', keyFileVariable: 'PUBLICKEY')]) {
-                        sh  """
-                        mkdir /home/jenkins/.ssh
-                        cat $PUBLICKEY >/home/jenkins/.ssh/id_rsa.pub
-                        """
-                    }     
-            }
-         }
-         stage('Checkout'){
-            container('terraform-az') {
-                // Get the terraform plan
-                git url: gitRepo, branch: 'master'
-            }
-        }
-        stage('Terraform init'){
-            container('terraform-az') {
-                // Initialize the plan 
-                sh  """
-                    cd terraform-plans/create-vmss-from-image
-                    terraform init -input=false
-                   """
-            }
-        }
-        stage('Terraform plan'){
-            container('terraform-az') {  
-                
-                // Get the VM image ID for the VMSS  
-                sh  '''
-                     az login --service-principal -u $ARM_CLIENT_ID -p $ARM_CLIENT_SECRET --tenant $ARM_TENANT_ID
-                    '''
-
-                image_id = sh (
-                            script: "az image show -g $vm_images_rg -n $image_name --query '{VMName:id}' --out tsv",
-                            returnStdout: true).trim()
-
-                sh (script:"cd terraform-plans/create-vmss-from-image && terraform plan -out=tfplan -input=false -var 'terraform_resource_group='$vmss_rg -var 'terraform_vmss_name='$vmss_name -var 'terraform_azure_region='$location -var 'terraform_image_id='$image_id")
-                     
-            }
-        }
-       
-        stage('Terraform apply'){
-            container('terraform-az') {
-                // Apply the plan
-                sh  """  
-                    cd terraform-plans/create-vmss-from-image
-                    terraform apply -input=false -auto-approve "tfplan"
-                   """
-            }
-        }
-        stage('Upload tfstate'){
-            container('terraform-az') {
-                // Upload the state of the plan to Azure Blob Storage
-                sh (script: "cd terraform-plans/create-vmss-from-image && tar -czvf ~/workspace/${env.JOB_NAME}/$deployment'.tar.gz' .")
-                sh "pwd"
-                azureUpload blobProperties: [cacheControl: '', contentEncoding: '', contentLanguage: '', contentType: '', detectContentType: true], containerName: '<container-name>', fileShareName: '', filesPath: '${deployment}.tar.gz', storageCredentialId: '<jenkins-storage-id>', storageType: 'blobstorage'
-                
+   stages { 
+    
+     stage('Preparation') { 
+      steps {
+          cleanWs deleteDirs: true
+          slackSend (color: "good", message: "Status: STARTED RE-DEPLOYMENT | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER}")
+          git 'https://github.com/jente-janssens/IaC'
+      }
+           
+   }
+   
+   
+    
+    stage('Apply') {
+    steps {
+        
+        sh "cd fitcycle_terraform_fix/ && terraform init --backend-config=\"bucket=secure-state-demo\" --backend-config=\"key=terraform.tfstate\" --backend-config=\"region=us-west-1\" -lock=false && terraform apply --input=false --var-file=example_vars_files/us_west_1_mysql.tfvars --auto-approve"
+        sh "cd fitcycle_terraform_fix && terraform output --json > Terraform_Output.json"
+    }
+  }
+  
+    stage('Send Notification') {
+        steps {
+            script {
+                if (params.VIOLATION_FOUND == true) { 
+                    
+                    slackSend (color: "good", message: "Status: RE-DEPLOYED CLOUD INFRA | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER}")
+                } else {
+                    slackSend (color: "warning" , message: "Status: VIOLATION DID NOT MATCH. SKIP RE-DEPLOY | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER}")
+                }
             }
         }
     }
-    catch (err) {
-        currentBuild.result = "FAILURE"
-        throw err
-    }
-    }
+
+ }
+ 
+ post {
+        
+        success {
+            slackSend color: "good", message: "Status: PIPELINE ${currentBuild.result} | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER}"
+            archiveArtifacts artifacts: 'fitcycle_terraform_fix/Terraform_Output.json', fingerprint: true
+            archiveArtifacts artifacts: 'violations_using_api.py', fingerprint: true           
+        }
+        aborted {
+            slackSend color: "warning", message: "Status: ${currentBuild.result} | Job: ${env.JOB_NAME} | Build number ${env.BUILD_NUMBER}"
+        }
+ }
+ 
 }
